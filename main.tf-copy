@@ -1,0 +1,195 @@
+// Creates a VPC
+resource "google_compute_network" "vpc_network" {
+    name = var.vpc_name
+    auto_create_subnetworks = var.vpc_auto_create_subnets
+    mtu = var.vpc_mtu
+}
+
+// Creates a VPC subnetwork
+resource "google_compute_subnetwork" "vpc_network_subnet" {
+  name = var.vpc_subnet_name
+  ip_cidr_range = var.vpc_subnet_cidr_range
+  region = var.vpc_subnet_region
+  network = google_compute_network.vpc_network.id
+}
+
+// Add ICMP firewall rule
+resource "google_compute_firewall" "vpc_firewall_icmp" {
+  name = var.vpc_firewall_icmp_name
+  network = google_compute_network.vpc_network.self_link
+
+  allow {
+    protocol = var.vpc_firewall_icmp_protocol
+  }
+
+  source_ranges = var.vpc_firewall_icmp_source_range
+}
+
+// Adds a custom firewall rule
+resource "google_compute_firewall" "vpc_firewall_custom" {
+  name = var.vpc_firewall_custom_name
+  network = google_compute_network.vpc_network.self_link
+
+  allow {
+    protocol = var.vpc_firewall_custom_protocol
+  }
+
+  source_ranges = var.vpc_firewall_custom_source_range
+}
+
+// Adds a ssh firewall rule
+resource "google_compute_firewall" "vpc_firewall_ssh" {
+  name = var.vpc_firewall_ssh_name
+  network = google_compute_network.vpc_network.self_link
+
+  allow {
+    protocol = var.vpc_firewall_ssh_protocol
+    ports = var.vpc_firewall_ssh_ports
+  }
+
+  source_ranges = var.vpc_firewall_ssh_source_range
+}
+
+// Adds a rdp firewall rule
+resource "google_compute_firewall" "vpc_firewall_rdp" {
+  name = var.vpc_firewall_rdp_name
+  network = google_compute_network.vpc_network.self_link
+
+  allow {
+    protocol = var.vpc_firewall_rdp_protocol
+    ports = var.vpc_firewall_rdp_port
+  }
+
+  source_ranges = var.vpc_firewall_rdp_source_range
+}
+
+# data "google_client_config" "provider" {}
+
+resource "google_container_cluster" "gke_cluster" {
+  name               = var.gke_cluster_name
+  location           = var.gke_cluster_location
+  initial_node_count = var.gke_cluster_node_count
+  network            = google_compute_network.vpc_network.id
+  subnetwork         = google_compute_subnetwork.vpc_network_subnet.id
+  deletion_protection = false
+}
+
+resource "kubernetes_secret" "postgres_secret" {
+  metadata {
+    name = "postgres-auth"
+  }
+
+  data = {
+    username = "postgres"
+    password = "123"
+  }
+
+  type = "kubernetes.io/basic-auth"
+}
+
+//Comment it out for now
+data "kubernetes_secret" "postgres_secret_name" {
+  metadata {
+    name = kubernetes_secret.postgres_secret.metadata[0].name
+  }
+}
+
+resource "kubernetes_deployment" "deployment_bamboo" {
+  metadata {
+    name = "bamboo"
+    labels = {
+      app = "bamboo"
+    }
+  }
+
+  spec {
+    replicas = 1
+    selector {
+      match_labels = {
+        app = "bamboo"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "bamboo"
+        }
+      }
+
+      spec {
+        # service_account_name = "sg-key"
+        container {
+          name = "bamboo"
+          image = "atlassian/bamboo-server:latest"
+          env {
+            name = "DB_NAME"
+            # value = "postgres://localhost:5432/bamboo-db?sslmode=disable"
+            value = "postgres"
+          }
+          env {
+            name = "DB_USER"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.postgres_secret.metadata[0].name
+                # name = "postgres-auth" --comment it out for now
+                key = data.kubernetes_secret.postgres_secret_name.data["username"]
+                # key = "username"
+              }
+            }
+          }
+          env {
+            name = "DB_PASS"
+            value_from {
+              secret_key_ref {
+                # name = "postgres-auth" --comment it out for now
+                name = kubernetes_secret.postgres_secret.metadata[0].name
+                key = data.kubernetes_secret.postgres_secret_name.data["password"]
+                # key = "password"
+              }
+            }
+          }
+          //Comment it out for now the db type below
+          # env {
+          #   name = "ATL_DB_TYPE"
+          #   value = "postgresql"
+          # }
+          port {
+            container_port = 8085
+          }
+        }
+        container {
+          name = "cloud-sql-proxy"
+          image = "gcr.io/cloudsql-docker/gce-proxy:latest"
+          args = [ "--private-ip", "--port=8085", "sagargke:europe-west2:bb-db" ]
+          # command = ["/cloud_sql_proxy", "-instances=sagargke:europe-west2:bamboo-db=tcp:5432"] --comment it out for now
+          security_context {
+            run_as_non_root = true
+          }
+          resources {
+            requests = {
+              memory = "2Gi"
+              cpu = "1"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+resource "kubernetes_service" "service_bamboo" {
+  metadata {
+    name = "bamboo"
+  }
+  spec {
+    selector = {
+      app = "bamboo"
+    }
+    port {
+      port = 80
+      target_port = 8085
+    }
+    type = "LoadBalancer"
+  }
+}
