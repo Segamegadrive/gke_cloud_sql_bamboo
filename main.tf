@@ -5,9 +5,6 @@ and Bamboo on the cluster. Additionally, it also deploys
 Cloud SQL Postgres instance and connects with Private 
 Service Access internal IP address.
 
-
-Confluence doc: https://confluence.endava.com/display/Cloud/Bamboo+on+GKE+and+Cloud+SQL+Postgres+DB+-+Terraform
-
 */
 
 // Creates a VPC
